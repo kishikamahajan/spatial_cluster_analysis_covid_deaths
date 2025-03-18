@@ -1,0 +1,250 @@
+---
+title: "SCA_EDA"
+output: html_document
+date: "2025-02-06"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Libraries
+
+```{r}
+library(tidyverse)
+library(haven)
+```
+
+================================================================================
+# Pollution Data
+================================================================================
+
+Reading the pollution data
+
+```{r}
+pm_2.5 <- read_csv("/Users/kishikamahajan/Desktop/SCA_Project/shrug-pm25-csv/pm25_pc11dist.csv")
+```
+
+Covid started in January, 2020 in India, so, we can look at the average pm2.5 levels from 2017 to 2019  to get an average of the pm2.5 levels in each district. 
+
+So, we can keep data for only those years - 
+
+```{r}
+pm_2.5_filtered <- pm_2.5 %>%
+  filter(year %in% c("2017" , "2018" , "2019"))
+```
+
+Taking an average of each district across the 3 years to get one estimate per district
+
+```{r}
+pm_2.5_final <- pm_2.5_filtered %>%
+  group_by(pc11_state_id, pc11_district_id) %>%
+  summarise(avg_pm25_mean = mean(pm25_mean, na.rm = TRUE))
+```
+
+This has pm_2.5 values for each district in each state in India. It should be noted that we have data for only 640 districts. 
+
+================================================================================
+# Hospitals Data
+================================================================================
+
+```{r}
+hospitals <- read_dta("/Users/kishikamahajan/Desktop/SCA_Project/dlhs4_hospitals_dist_pc11.dta")
+```
+
+Getting the variable for total beds with oxygen cylinder (phc + chc)
+
+```{r}
+hospitals <- hospitals %>%
+  mutate(total_beds_oxygen = dlhs4_chc_beds_ven + dlhs4_phc_beds_oxy)
+```
+
+Total beds including ICU
+
+```{r}
+hospitals <- hospitals %>%
+  mutate(dlhs4_total_beds = dlhs4_total_beds + dlhs4_dh_icu_beds)
+```
+
+Retaining only the specific variables
+
+```{r}
+hospitals_final <- hospitals %>%
+  select(pc11_state_id, pc11_district_id, dlhs4_total_beds, dlhs4_total_facilities, dlhs4_total_staff, total_beds_oxygen)
+```
+
+This has hospital and health infrastructure values for each district in each state in India. It should be noted that we have data for only 552 districts. 
+
+================================================================================
+# Agw Data
+================================================================================
+
+```{r}
+age_bins <- read_dta("/Users/kishikamahajan/Desktop/SCA_Project/age_bins_district_t.dta")
+```
+
+```{r}
+# Define age group midpoints
+age_midpoints <- seq(2.5, 82.5, by = 5)
+
+# Create column names for age group population counts
+age_columns <- paste0("age_", seq(0, 80, by = 5), "_t")
+
+# Compute weighted sum of ages
+age_bins$weighted_age_sum <- rowSums(sweep(age_bins[, age_columns], 2, age_midpoints, `*`), na.rm = TRUE)
+
+# Compute average age per observation
+age_bins$average_age <- age_bins$weighted_age_sum / age_bins$pc11_pca_tot_t
+
+# Handle division by zero
+age_bins$average_age <- ifelse(age_bins$pc11_pca_tot_t > 0, age_bins$average_age, NA)
+```
+
+For age distribution, we can retain the total shares in each district (not classifying between urban and rural)
+
+```{r}
+age_bins_final <- age_bins %>%
+  select(pc11_state_id , pc11_district_id , average_age, pc11_pca_tot_t)
+```
+
+================================================================================
+# OUTCOME
+# Deaths Data
+================================================================================
+
+```{r}
+covid_deaths <- read_dta("/Users/kishikamahajan/Desktop/SCA_Project/covid_infected_deaths_pc11.dta")
+```
+
+The data tells about the deaths and the cases from 2020-01-30 to 2021-10-31. 
+
+```{r}
+covid_deaths_final <- covid_deaths %>%
+  group_by(pc11_state_id, pc11_district_id) %>%
+  summarise(total_cases = sum(total_cases, na.rm = TRUE),
+            total_deaths = sum(total_deaths, na.rm = TRUE))
+```
+
+This has total cases and total deaths values for each district in each state in India. It should be noted that we have data for only 683 districts.
+
+
+================================================================================
+================================================================================
+
+Loading the shapefiles 
+
+```{r}
+district_shapefile <- st_read("/Users/kishikamahajan/Desktop/SCA_Project/shrug-pc11dist-poly-shp/district.shp")
+```
+```{r}
+district_shapefile <- district_shapefile %>%
+  rename(pc11_district_id = pc11_d_id,
+         pc11_state_id = pc11_s_id)
+```
+
+
+Merging the shapefile with the pollution data
+
+```{r}
+pollution_shapefile <- district_shapefile %>%
+  merge(pm_2.5_final, by = c("pc11_district_id", "pc11_state_id"))
+st_write(pollution_shapefile, "pollution_shapefile.shp", driver = "ESRI Shapefile")
+```
+
+================================================================================
+# Migration Data
+================================================================================
+
+```{r}
+migration <- read_dta("/Users/kishikamahajan/Desktop/SCA_Project/district_migration_pc11.dta")
+```
+
+```{r}
+migration_final <- migration %>%
+  select(pc11_state_id , pc11_district_id , inltmigrationshare , instmigrationshare , outltmigrationshare , outstmigrationshare)
+```
+
+
+Looking to merge all the state capacity indicators - 
+
+```{r}
+state_capacity <- merge(hospitals_final, age_bins_final, by = c("pc11_district_id", "pc11_state_id"))
+state_capacity <- merge(state_capacity, migration_final, by = c("pc11_district_id", "pc11_state_id"))
+
+state_capacity <- state_capacity %>%
+  mutate(beds_per_1000 = (dlhs4_total_beds / pc11_pca_tot_t)*1000,
+         fac_per_1000 = (dlhs4_total_facilities / pc11_pca_tot_t)*1000,
+         staff_per_1000 = (dlhs4_total_staff / pc11_pca_tot_t)*1000,
+         oxy_beds_per_1000 = (total_beds_oxygen / pc11_pca_tot_t)*1000)
+
+state_capacity_shapefile <- district_shapefile %>%
+  merge(state_capacity, by = c("pc11_district_id", "pc11_state_id"))
+
+state_capacity_shapefile <- state_capacity_shapefile %>%
+  rename(dlhs4_beds = dlhs4_total_beds,
+         dlhs4_facilities = dlhs4_total_facilities,
+         dlhs4_staff = dlhs4_total_staff,
+         total_oxygen = total_beds_oxygen)
+
+names(state_capacity_shapefile) <- make.names(names(state_capacity_shapefile), unique = TRUE)
+
+st_write(state_capacity_shapefile, "state_capacity_shapefile.shp", driver = "ESRI Shapefile")
+```
+
+```{r}
+statecap_pollution_shapefile <- state_capacity_shapefile %>%
+  merge(pm_2.5_final, by = c("pc11_district_id", "pc11_state_id"))
+
+st_write(statecap_pollution_shapefile, "state_capacity_pollution_shapefile.shp", driver = "ESRI Shapefile")
+```
+
+```{r}
+clustered_shapefile <- st_read("/Users/kishikamahajan/Desktop/SCA_Project/state_capacity_pollution_shapefile/state_capacity_pollution_shapefile.shp")
+```
+```{r}
+clustered_shapefile$d_name <- tolower(clustered_shapefile$d_name)
+```
+
+```{r}
+covid_deaths_final <- covid_deaths_final %>%
+  rename(pc11_s_ = pc11_state_id,
+         pc11_d_ = pc11_district_id)
+```
+
+Merging the two files 
+
+```{r}
+final_clustered <- clustered_shapefile %>%
+  left_join(covid_deaths_final, by = c("pc11_s_", "pc11_d_"))
+```
+
+We need to look at the cases by population and deaths by population
+
+```{r}
+final_clustered <- final_clustered %>%
+  mutate(deaths_per_1000 = (total_deaths / pc11___)*1000)
+```
+
+Looking at cluster wise proportions
+
+```{r}
+cluster_summary <- final_clustered %>%
+  st_drop_geometry() %>%  
+  group_by(CL) %>%
+  summarise(
+    mean_deaths_1000 = mean(deaths_per_1000, na.rm = TRUE))
+
+cluster_summary
+```
+
+```{r}
+covid_deaths_shapefile <- covid_deaths_final %>%
+  merge(district_shapefile , on = c("pc11_state_id" , "pc11_district_id"))
+
+covid_deaths_shapefile <- covid_deaths_shapefile %>%
+  select(-total_cases)
+```
+
+```{r}
+st_write(covid_deaths_shapefile, "covid_deaths_shapefile.shp", driver = "ESRI Shapefile")
+```
