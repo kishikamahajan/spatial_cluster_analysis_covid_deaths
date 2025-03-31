@@ -76,7 +76,7 @@ hospitals_final <- hospitals %>%
 This has hospital and health infrastructure values for each district in each state in India. It should be noted that we have data for only 552 districts. 
 
 ================================================================================
-# Agw Data
+# Age Data
 ================================================================================
 
 ```{r}
